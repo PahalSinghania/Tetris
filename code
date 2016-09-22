@@ -1,0 +1,398 @@
+(require 2htdp/image)
+(require 2htdp/universe)
+
+;Constants
+(define BLOCK-SIZE 20)
+(define WSIZE-H (* 20 BLOCK-SIZE))
+(define WSIZE-W (* 10 BLOCK-SIZE))
+(define BG (empty-scene WSIZE-W WSIZE-H))
+(define ORIGIN (/ WSIZE-W (* BLOCK-SIZE 2))) ;grid posn 
+(define CENTER (make-posn  ORIGIN -1)) ; grid posn
+(define TICK-SPEED 0.2)
+(define TS 7) ; No of tetras 
+(define BLOCK-S (/ BLOCK-SIZE 2)); grid posn
+
+;.....................................................................
+;; Data Definitions
+ 
+;; A Block is a (make-block Number Number Color)
+(define-struct block (x y color))
+
+;; A Tetra is a (make-tetra Posn BSet)
+;; The center point is the point around which the tetra rotates when it spins
+(define-struct tetra (center blocks))
+
+;; A Set of Blocks (BSet) is one of:
+;; - empty
+;; - (cons Block BSet)
+;; Order does not matter.
+ 
+;; A World is a (make-world Tetra BSet)
+;; The BSet represents the pile of blocks at the bottom of the screen.
+(define-struct world (tetra pile))
+
+;....................................................................
+;check-expect helpers
+(define WORLD1 (make-world (make-tetra (make-posn 1 1) empty) empty))
+
+(define WORLD2 (make-world (make-tetra (make-posn 1 1) empty) 
+                           (list (make-block 5 1 'red) (make-block 1 1 "red"))))
+
+(define WORLD3 (make-world (make-tetra (make-posn 1 1) empty) 
+                           (list (make-block 5 0 'red) (make-block 1 1 "red"))))
+
+(define WORLD4 (make-world (make-tetra (make-posn 1 1) (list(make-block 1 1 "red")))
+                           (list (make-block 1 2 "red"))))
+
+(define AQUA-B (overlay
+                (square BLOCK-SIZE "outline" 'black) (square BLOCK-SIZE "solid" 'aqua)))
+
+(define J1 (make-tetra CENTER (list (make-block  ORIGIN  -1 'aqua)
+                                    (make-block (+ ORIGIN 1) -1 'aqua))))
+
+(define ROW-1  (list (make-block 1 1 'red) (make-block 1 3 'red) (make-block 2 3 'red)
+                     (make-block 3 3 'red) (make-block 4 3 'red) (make-block 5 3 'red)
+                     (make-block 6 3 'red) (make-block 7 3 'red) (make-block 8 3 'red)
+                     (make-block 9 3 'red) (make-block 10 4 'red)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+; Tetra Definitions
+(define O (make-tetra CENTER (list (make-block ORIGIN -1 'green)
+                                   (make-block ORIGIN -2 'green)
+                                   (make-block (+ ORIGIN 1) -1 'green)
+                                   (make-block (+ ORIGIN 1) -2 'green))))
+
+(define I (make-tetra CENTER (list (make-block  ORIGIN  -1 'blue)
+                                   (make-block (+ ORIGIN 2) -1 'blue)
+                                   (make-block (+ ORIGIN 1) -1 'blue)
+                                   (make-block (- ORIGIN 1) -1 'blue))))
+                              
+
+(define L (make-tetra CENTER (list (make-block ORIGIN -1 'purple)
+                                   (make-block (- ORIGIN 1) -1 'purple)
+                                   (make-block (+ ORIGIN 1) -1 'purple)
+                                   (make-block (+ ORIGIN 1) -2 'purple))))
+
+(define J (make-tetra CENTER (list (make-block  ORIGIN  -1 'aqua)
+                                   (make-block (+ ORIGIN 1) -1 'aqua)
+                                   (make-block (- ORIGIN 1) -1 'aqua)
+                                   (make-block (- ORIGIN 1) -2 'aqua))))
+
+(define T (make-tetra CENTER (list (make-block ORIGIN -1 'orange)
+                                   (make-block ORIGIN -2 'orange)
+                                   (make-block (+ ORIGIN 1) -1 'orange)
+                                   (make-block (- ORIGIN 1) -1 'orange))))
+
+(define Z (make-tetra CENTER (list (make-block ORIGIN -1 'pink)
+                                   (make-block ORIGIN -2 'pink)
+                                   (make-block (+ ORIGIN 1) -1 'pink)
+                                   (make-block (- ORIGIN 1) -2 'pink))))
+
+(define S (make-tetra CENTER (list (make-block ORIGIN -1 'red)
+                                   (make-block ORIGIN -2 'red)
+                                   (make-block (- ORIGIN 1) -1 'red)
+                                   (make-block (+ ORIGIN 1) -2 'red))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; to-draw functions
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; draw-world: World -> Image
+; Draws the given WORLD
+
+(define (draw-world w)
+  (local [; BSet Image -> Image
+          ; Places the BSet on the given image
+          (define (draw p x)
+            (place-image (overlay (square BLOCK-SIZE "outline" 'black)
+                                  (square BLOCK-SIZE "solid" (block-color p)))
+                      (grid-posn (block-x p)) (grid-posn (block-y p)) x))]
+    (foldr draw (foldr draw BG (world-pile w)) (tetra-blocks (world-tetra w)))))
+                 
+(check-expect (draw-world (make-world J1 empty))
+              (place-image AQUA-B (+ ORIGIN BLOCK-S) (- BLOCK-S) 
+                (place-image AQUA-B (- ORIGIN BLOCK-S) (- BLOCK-S) BG)))
+
+;..............................................................................
+; grid-posn: Number -> Number
+; Takes in grid posn and givs pixel posn
+(define (grid-posn n)
+  (- (* n BLOCK-SIZE) (/ BLOCK-SIZE 2)))
+(check-expect (grid-posn 5) 90)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; on-tick Functions
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; update-world: World -> World 
+; Takes in a world and updates it
+(define (update-world w)
+  (local[; update-world: Tetra Bset-> World
+         ; Returns the next state of the world
+         (define (update t p)
+           (if (touching? (tetra-blocks t) p)
+               (make-world (new-tetra (random TS)) (append p (tetra-blocks t)))
+               (make-world (update-tetra  t) p)))]
+    (if (line-done? (world-pile w))
+        (make-world (world-tetra w) (move-lines (world-pile w)))
+        (update (world-tetra w) (world-pile w)))))
+
+(check-expect (update-world WORLD1) (make-world (make-tetra (make-posn 1 2) empty) empty))
+(check-expect (update-world (make-world O (cons (make-block 10 3 'red) ROW-1)))
+              (make-world O (list (make-block 1 2 'red) (make-block 10 4 'red))))
+(check-random (update-world WORLD4)
+              (make-world (new-tetra (random 7))
+                          (list (make-block 1 2 "red")(make-block 1 1 "red" ))))
+
+
+;..............................................................................
+; new-tetra: Number -> Tetra
+; Generates a random tetra
+(define (new-tetra n)
+  (cond [(= n 0) O]
+        [(= n 1) I]
+        [(= n 2) L]
+        [(= n 3) J]
+        [(= n 4) T]
+        [(= n 5) Z]
+        [(= n 6) S]))
+(check-expect (new-tetra 0) O)
+(check-expect (new-tetra 1) I)
+(check-expect (new-tetra 2) L)
+(check-expect (new-tetra 3) J)
+(check-expect (new-tetra 4) T)
+(check-expect (new-tetra 5) Z)
+(check-expect (new-tetra 6) S)
+
+;..............................................................................
+; update-tetra: Tetra -> Tetra
+; Returns Tetra at next position  
+
+(define (update-tetra t)
+  (local [; Block -> Block
+          ; Gives the Block at the next position
+          (define (next b)
+          (make-block (block-x b) (add1 (block-y b)) (block-color b)))]
+    (make-tetra (make-posn (posn-x (tetra-center t))
+                           (add1 (posn-y (tetra-center t))))
+                (map next (tetra-blocks t)))))
+
+(check-expect (update-tetra J1)
+              (make-tetra (make-posn 5 0)
+                          (list (make-block 5 0 'aqua) (make-block 6 0 'aqua))))
+
+;..............................................................................
+; touching?: BSet  BSet -> Boolean
+; Returns true if the BSet is touching the pile or the bottom
+
+(define (touching? t p)
+  (local [; position=?: Number Number Bset -> Posn
+          ; Checks if two posns are at the same location
+          (define (position=? x y bs)
+            (ormap (λ (b) (and (= x (block-x b)) (= y (- (block-y b) 1)))) bs))]
+    (or (ormap (λ (x) (= 20 (block-y x))) t)
+        (ormap (λ (t) (position=? (block-x t) (block-y t) p)) t))))
+  
+(check-expect (touching? empty (list (make-block 1 1 'red))) false)
+(check-expect (touching? (list (make-block 1 1 'red)) (list (make-block 1 2 'red))) true)
+
+;..............................................................................
+; line-done?:  BSet  -> Boolean
+; Returns true if the BSet covers an entire line
+
+(define (line-done? p)
+  (local [; Number -> BSet
+          ; Returns the number of elements in a given row 
+          (define (line-done y)
+            (length (filter  (λ (b) (= (block-y b) y)) p)))]
+    (ormap (λ (x) (= 10  (line-done (block-y x)))) p)))
+
+(check-expect (line-done? (cons (make-block 10 3 'red) ROW-1)) true)
+(check-expect (line-done? ROW-1) false)
+                               
+;..............................................................................
+; move-lines:  BSet  -> Bset
+; Returns the updated pile
+
+(define  (move-lines p)
+  (local [; Number -> Boolean
+          ; Checks if the given number is above the deleted row 
+          (define (above? y)
+            (ormap (λ (b) (< y b)) (completed-lines p)))]
+    (map (λ (b) (if (above? (block-y b))
+                    (make-block (block-x b)
+                                (+ (block-y b) (length(no-rep(completed-lines p))))
+                                (block-color b)) b)) (clear-line p))))
+
+(check-expect (move-lines (cons (make-block 10 3 'red) ROW-1))
+              (list (make-block 1 2 'red) (make-block 10 4 'red)))
+
+;..............................................................................
+; clear-line: Bset -> Bset
+; Returns Bset after removing completed rows
+(define (clear-line p) 
+ (filter (λ (b)(not (member? (block-y b) (completed-lines p)))) p))
+(check-expect (clear-line (cons (make-block 10 3 'red) ROW-1))
+              (list (make-block 1 1 'red) (make-block 10 4 'red)))
+
+;..............................................................................
+; completed-lines Bset -> [List-of Numbers]
+; Returns a list of complete rows 
+(define (completed-lines p)
+  (local [; Number -> BSet
+          ; Returns the number of elements in a given row 
+          (define (row-complete? y)
+            (if (= 10 (length (filter  (λ (b) (= (block-y b) y)) p))) y 0))]
+   (filter (λ (b) (not(zero? b))) (map (λ (x) (row-complete? (block-y x))) p))))
+
+(check-expect (completed-lines (cons (make-block 10 3 'red) ROW-1)) (make-list 10 3))
+
+;..............................................................................
+; no-rep [List-of Numbers] -> [List-of Numbers]
+; Returns a list  without repetition 
+(define (no-rep p)
+  (cond
+    [(empty? p) empty]
+    [(member? (first p) (rest p)) (no-rep (rest p))]
+    [else (cons (first p) (no-rep (rest p)))]))
+
+(check-expect (no-rep (list 2 2 2 3 3 3 3 4 4 5 5)) (list 2 3 4 5))
+  
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; on-key functions
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; move-tetra: World KeyEvent -> World 
+; moves tetra according to key input 
+
+(define (move-tetra w ke)
+  (cond[(and (string=? ke "a")
+             (on-screen? (tetra-blocks (rotation (world-tetra w))) ke)
+             (beside-block? (tetra-blocks (rotation (world-tetra w))) ke (world-pile w)))
+        (make-world (rotation (world-tetra w)) (world-pile w))]
+       [(and (string=? ke "s")
+             (on-screen? (tetra-blocks (rotation(rotation(rotation(world-tetra w))))) ke)
+             (beside-block? (tetra-blocks (rotation(rotation(rotation(world-tetra w)))))
+                            ke (world-pile w)))
+        (make-world (rotation (rotation (rotation (world-tetra w)))) (world-pile w))]
+       [(and (string=? ke "left") 
+             (on-screen? (tetra-blocks (world-tetra w)) ke)
+             (beside-block? (tetra-blocks (world-tetra w)) ke (world-pile w)))
+        (make-world (translate-tetra (world-tetra w) -1) (world-pile w))]
+       [(and (string=? ke "right")
+             (on-screen? (tetra-blocks (world-tetra w)) ke)
+             (beside-block? (tetra-blocks (world-tetra w)) ke (world-pile w)))
+        (make-world (translate-tetra (world-tetra w) +1) (world-pile w))]
+       [else w]))
+
+(check-expect (move-tetra WORLD1 "left") (make-world (make-tetra(make-posn 0 1) '()) '()))
+(check-expect (move-tetra WORLD1 "right") (make-world(make-tetra(make-posn 2 1) '()) '()))
+(check-expect (move-tetra WORLD1 "a") (make-world (make-tetra (make-posn 1 1) '()) '()))
+(check-expect (move-tetra WORLD1 "s") (make-world (make-tetra (make-posn 1 1) '()) '()))
+(check-expect (move-tetra WORLD1 "down") WORLD1 )
+
+;..............................................................................
+; rotate: Tetra -> Tetra
+; Passes the tetra's contents on, produces a rotated tera
+(define (rotation t)
+  (make-tetra (tetra-center t) (b-rotate (tetra-center t) (tetra-blocks t))))
+(check-expect (rotation (world-tetra WORLD2)) (make-tetra (make-posn 1 1) empty))
+
+;..............................................................................
+; b-rotate: BSet Posn -> BSet
+; Rotates the BSet
+
+(define (b-rotate c b)
+  (local[; b-rotate-ccw : Posn Block -> Block
+         ; Rotate the block 90 counterclockwise around the posn.
+         (define (b-rotate-ccw b)
+           (make-block (+ (posn-x c) (- (posn-y c) (block-y b)))
+                       (+ (posn-y c) (- (block-x b) (posn-x c)))
+                       (block-color b)))]
+          (map b-rotate-ccw b)))
+
+(check-expect (b-rotate (make-posn 1 1) empty ) empty)
+(check-expect (b-rotate (make-posn 1 1) (list (make-block 9 87 'red)))
+              (list (make-block -85 9 'red)))
+
+;..............................................................................
+; translate-tetra: Tetra Number -> Tetra
+; translate tetra by x along the x axis on the grid
+
+(define (translate-tetra t x)
+   (local [; Block -> Block
+          ; translates a block
+          (define (translate b)
+            (make-block (+ (block-x b) x) (block-y b) (block-color b)))]
+     (make-tetra (make-posn (+ (posn-x (tetra-center t)) x) (posn-y (tetra-center t)))
+                 (map translate  (tetra-blocks t)))))
+
+(check-expect (translate-tetra J1 1)
+              (make-tetra (make-posn 6 -1)
+                    (list (make-block 6 -1 'aqua) (make-block 7 -1 'aqua))))
+
+;..............................................................................
+; on-screen?: BSet ke -> boolean
+; Checks if BSet hits the wall
+
+(define (on-screen? bs ke)
+  (local [; Block -> Boolean
+          ; translates a block
+          (define (on-screen?? b)
+            (or (and (string=? ke "left")(>= 1 (block-x b)))
+                (and (string=? ke "right")(<= 10 (block-x b)))
+                (or (< 10 (block-x b)) (> 1 (block-x b)))))]
+    (not (ormap on-screen?? bs))))
+          
+(check-expect (on-screen? (list (make-block 10 87 'red)) "right") false)
+(check-expect (on-screen? (list (make-block 10 87 'red)) "left") true)
+(check-expect (on-screen? (list (make-block 1 87 'red)) "left") false)
+(check-expect (on-screen? (list (make-block 1 87 'red)) "right") true)
+(check-expect (on-screen? (list (make-block 0 87 'red)) "right") false)
+(check-expect (on-screen? (list (make-block 11 87 'red)) "right") false)
+
+;..............................................................................
+; beside-block?: BSet ke Bset -> boolean
+; Checks if BSet hits the pile on translation
+
+(define (beside-block? bs ke p)
+  (local [; Number Number -> Boolean
+          ; Checks if next to pile
+          (define (next-to x y)
+            (cond
+              [(string=? ke "left")
+               (ormap (λ (b) (and(= x (+ (block-x b) 1)) (= y (block-y b)))) p)]
+              [(string=? ke "right")
+                (ormap (λ (b) (and(= x (- (block-x b) 1)) (= y(block-y b)))) p)]
+              [else (ormap (λ (b) (and(= x(block-x b)) (= y(block-y b)))) p)]))]
+  (not (ormap (λ (b) (next-to (block-x b) (block-y b))) bs))))
+
+(check-expect (beside-block? (list(make-block 1 7 'red)) "left" empty) true)
+(check-expect (beside-block? (list(make-block 1 7 'red)) "left"
+                             (list(make-block 0 7 'red))) false)
+(check-expect (beside-block? (list(make-block 1 7 'red)) "right"
+                             (list(make-block 2 7 'red))) false)
+(check-expect (beside-block? (list(make-block 1 7 'red)) "a" (list(make-block 1 7 'red)))
+              false)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; stop-when functions
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; lost: World -> Boolean
+; Stops the game
+(define (lost w)
+  (ormap (λ (p) (< (block-y  p) 1)) (world-pile w)))
+(check-expect (lost WORLD1) false)
+(check-expect (lost WORLD3) true)
+
+;..............................................................................
+; display-score: World -> Image
+; Count the number of blocks in the pile
+(define (display-score w)
+  (text (string-append "Score:" (number->string (length (world-pile w)))) 30 'black))
+(check-expect (display-score WORLD1 ) (text "Score:0" 30 'black))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(big-bang (make-world (new-tetra (random TS)) empty)
+          (on-tick update-world TICK-SPEED)
+          (to-draw draw-world)
+          (on-key move-tetra)
+          (stop-when lost display-score))
